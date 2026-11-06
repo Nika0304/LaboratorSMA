@@ -32,22 +32,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
-// ---------- ETAPA 1: modelul de date ----------
 enum class Priority(val label: String, val color: Color) {
     LOW("Mică", Color(0xFF43A047)),
     MEDIUM("Medie", Color(0xFFFB8C00)),
     HIGH("Mare", Color(0xFFE53935))
 }
-
-data class TodoItem(
-    val id: Int,
-    val title: String,
-    val description: String = "",
-    val priority: Priority = Priority.MEDIUM,
-    val done: Boolean = false
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,12 +54,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ---------- ETAPA 2: ecranul principal + dialogul de adăugare/editare ----------
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TodoScreen() {
+fun TodoScreen(vm: TodoViewModel = viewModel()) {
+    // Lista din Room (sursa de adevăr) și o copie locală modificabilă pentru drag and drop
+    val saved by vm.todos.collectAsStateWithLifecycle()
     val todos = remember { mutableStateListOf<TodoItem>() }
-    var nextId by remember { mutableIntStateOf(0) }
+    LaunchedEffect(saved) {
+        todos.clear()
+        todos.addAll(saved)
+    }
 
     var showDialog by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<TodoItem?>(null) }
@@ -113,7 +109,7 @@ fun TodoScreen() {
                     modifier = Modifier.weight(1f)
                 )
                 if (doneCount > 0) {
-                    TextButton(onClick = { todos.removeAll { it.done } }) {
+                    TextButton(onClick = { vm.deleteDone() }) {
                         Text("Șterge finalizate")
                     }
                 }
@@ -157,7 +153,10 @@ fun TodoScreen() {
                     onEdit = {
                         editing = it
                         showDialog = true
-                    }
+                    },
+                    onToggle = { item, checked -> vm.update(item.copy(done = checked)) },
+                    onDelete = { vm.delete(it) },
+                    onReorder = { vm.saveOrder(it) }
                 )
             }
         }
@@ -170,16 +169,15 @@ fun TodoScreen() {
             onConfirm = { title, description, priority ->
                 val current = editing
                 if (current == null) {
-                    todos.add(TodoItem(nextId++, title, description, priority))
+                    vm.add(title, description, priority)
                 } else {
-                    val i = todos.indexOfFirst { it.id == current.id }
-                    if (i >= 0) {
-                        todos[i] = todos[i].copy(
+                    vm.update(
+                        current.copy(
                             title = title,
                             description = description,
                             priority = priority
                         )
-                    }
+                    )
                 }
                 showDialog = false
             }
@@ -187,7 +185,6 @@ fun TodoScreen() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TodoDialog(
     initial: TodoItem?,
@@ -225,7 +222,7 @@ fun TodoDialog(
                 Text("Prioritate", fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Priority.values().forEach { p ->
+                    Priority.entries.forEach { p ->
                         FilterChip(
                             selected = priority == p,
                             onClick = { priority = p },
@@ -249,15 +246,18 @@ fun TodoDialog(
     )
 }
 
-// ---------- ETAPA 3: lista cu drag and drop (apăsare lungă + tragi) ----------
 @Composable
 fun DraggableTodoList(
     todos: SnapshotStateList<TodoItem>,
-    onEdit: (TodoItem) -> Unit
+    onEdit: (TodoItem) -> Unit,
+    onToggle: (TodoItem, Boolean) -> Unit,
+    onDelete: (TodoItem) -> Unit,
+    onReorder: (List<TodoItem>) -> Unit
 ) {
     val listState = rememberLazyListState()
     var draggedIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
+    val currentOnReorder by rememberUpdatedState(onReorder)
 
     LazyColumn(
         state = listState,
@@ -296,7 +296,11 @@ fun DraggableTodoList(
                         }
                     }
                 },
-                onDragEnd = { draggedIndex = null; dragOffset = 0f },
+                onDragEnd = {
+                    draggedIndex = null
+                    dragOffset = 0f
+                    currentOnReorder(todos.toList())
+                },
                 onDragCancel = { draggedIndex = null; dragOffset = 0f }
             )
         }
@@ -334,10 +338,7 @@ fun DraggableTodoList(
                     Spacer(Modifier.width(6.dp))
                     Checkbox(
                         checked = item.done,
-                        onCheckedChange = { checked ->
-                            val i = todos.indexOfFirst { it.id == item.id }
-                            if (i >= 0) todos[i] = todos[i].copy(done = checked)
-                        }
+                        onCheckedChange = { checked -> onToggle(item, checked) }
                     )
                     Column(
                         modifier = Modifier
@@ -380,7 +381,7 @@ fun DraggableTodoList(
                             )
                         }
                     }
-                    IconButton(onClick = { todos.removeAll { it.id == item.id } }) {
+                    IconButton(onClick = { onDelete(item) }) {
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = "Șterge",
